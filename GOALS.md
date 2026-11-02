@@ -1,9 +1,10 @@
 # Project goals: AWS-to-VPS migration kit
 
-This repo (joheee/TicTacToeVpsMigration) is portfolio project #2 for my Upwork DevOps profile. The point is the
-**migration**: a client should look at it and think "this person can move my
-app off an expensive cloud setup onto a cheap VPS, with a written cutover plan,
-a rollback, measured downtime and no lost data".
+This repo (joheee/TicTacToeVpsMigration) is portfolio project #2 for my Upwork
+DevOps profile. The point is the **migration**: a client should look at it and
+think "this person can move my app off an expensive cloud setup onto a cheap
+VPS, with a written cutover plan, a rollback, measured downtime and no lost
+data".
 
 The workload is the tic-tac-toe app from project 4
 ([joheee/TicTacToeCICD](https://github.com/joheee/TicTacToeCICD)), which today
@@ -11,6 +12,32 @@ runs on AWS (EC2 + ECR + SSM, built by
 [joheee/TicTacToeInfra](https://github.com/joheee/TicTacToeInfra), about $25 a
 month) at `tictactoe.johe.my.id`. This project moves it, with its PostgreSQL
 data, to a **DigitalOcean Droplet**, then retires the AWS stack.
+
+## How the three repos fit together
+
+This repo is **Terraform, server setup and the migration runbooks only**. It
+follows project 4's split: the infra repo's outputs become the app repo's
+GitHub Actions variables, and the app repo owns the pipeline.
+
+| Repo | Holds |
+|---|---|
+| **TicTacToeVpsMigration** (this repo) | Terraform for the Droplet, VPC, Cloud Firewall, reserved IP and backup bucket; cloud-init hardening; checks workflow; cutover and rollback runbooks, diagrams, downtime log, cost table |
+| **TicTacToeCICD** | The app, Compose, Caddyfile, and the pipeline: GHCR push, `deploy-do.yml` (Tailscale + SSH deploy, smoke test, rollback), nightly `pg_dump` job. Its AWS `deploy.yml` stays until cutover. |
+| **TicTacToeInfra** | The AWS stack being retired. No DigitalOcean resources; destroyed after the cutover. |
+
+### Outputs contract
+
+TicTacToeCICD copies these outputs into its GitHub Actions variables. Renaming
+or removing one is a breaking change for the app repo; add new ones freely.
+
+| Terraform output | App repo variable | What it is |
+|---|---|---|
+| `droplet_ipv4` | `DO_DROPLET_IP` | Reserved IP the DNS record points at |
+| `tailscale_hostname` | `DO_TAILSCALE_HOST` | Host the deploy workflow SSHes to over the tailnet |
+| `deploy_user` | `DO_DEPLOY_USER` | Non-root user the deploy runs as |
+| `app_url` | `DO_APP_URL` | Public URL for the smoke test |
+| `backup_bucket` | `DO_BACKUP_BUCKET` | Spaces bucket for nightly `pg_dump` files |
+| `spaces_endpoint` | `DO_SPACES_ENDPOINT` | S3-compatible endpoint for that bucket |
 
 ## The pitch (what a client buys)
 
@@ -51,42 +78,51 @@ guards against forgotten resources.
 1. **Droplet in Terraform.** `digitalocean` provider: project, VPC, SSH key,
    Cloud Firewall allowing only 80 and 443 from anywhere, one 2 GB Droplet
    (Ubuntu 24.04, `sgp1`), reserved IP with its assignment, and a private Spaces
-   bucket for backups with a 7-day lifecycle rule. State is local while
-   testing, then a hand-made Space. Applied locally; no tokens in GitHub.
-2. **Hardened server from cloud-init.** Ubuntu LTS, non-root `deploy` user,
+   bucket for backups with a 7-day lifecycle rule. All six contract outputs.
+   Applied locally with the API token and Spaces keys as environment
+   variables; no tokens in GitHub.
+2. **Remote state.** Local while testing, then a hand-made Space through the
+   S3 backend (`endpoints.s3`, `use_path_style`, the `skip_*` validation
+   flags). Test whether `use_lockfile = true` works on Spaces with two
+   concurrent `plan` runs; if it doesn't, document that state is single-writer.
+3. **Hardened server from cloud-init.** Ubuntu LTS, non-root `deploy` user,
    SSH keys only (no passwords, no root login), UFW, fail2ban,
-   unattended-upgrades, Docker + Compose plugin, swap file. SSH is **not open
-   to the internet**: admin and CI reach the VM over Tailscale.
-3. **Same app image via GHCR.** TicTacToeCICD builds the `linux/amd64` image
-   and pushes it to GHCR (free) as well as ECR during the migration. Same
-   Compose file (db → migrate → app) and Caddy with Let's Encrypt as on EC2.
-   DigitalOcean has no ARM Droplets, so no arm64 build is needed.
-4. **CI/CD to the VPS.** A deploy workflow that joins the tailnet, pulls the
-   SHA-tagged image over SSH, runs the same smoke test and rolls back to
-   `last_good_tag` on failure, reusing the project 4 scripts. Secrets live in
-   GitHub Environment secrets, written to `.env` on the VM with mode 600.
+   unattended-upgrades, Docker + Compose plugin, swap file, `/opt/app`. SSH is
+   **not open to the internet**: admin and CI reach the VM over Tailscale.
+   Anything beyond this (app files, `.env`, containers) belongs to the app
+   pipeline.
+4. **Checks in CI.** `checks.yml` runs `terraform fmt -check`, `validate`,
+   `tflint` and `shellcheck` on every pull request and push. No `plan` in CI,
+   because DigitalOcean has no OIDC and the token stays off GitHub.
 5. **Edge: Cloudflare.** DNS for `johe.my.id` on Cloudflare, proxied record,
    Full (strict) TLS, WAF managed rules and a rate-limit rule on the login and
-   register endpoints. Caddy trusts Cloudflare's ranges (`trusted_proxies`) so
-   the app's per-IP rate limit sees the real client address.
-6. **Backups and monitoring.** Nightly `pg_dump` to Spaces with 7-day
-   retention and one tested restore. Uptime Kuma (or a free external check)
-   alerting by email or Telegram.
-7. **Rehearsed cutover with rollback.** A written runbook: lower DNS TTL,
-   rehearse on `vps.tictactoe.johe.my.id`, freeze writes, final `pg_dump` from
-   EC2 and restore on the VM, row-count check, flip DNS, smoke test, watch.
-   Rollback = flip DNS back to the EC2 Elastic IP (kept running 48 hours).
-   Downtime is measured during the rehearsal and the real cutover.
-8. **Retire AWS and write it up.** After 48 quiet hours, `terraform destroy`
+   register endpoints. Set by hand (or the Cloudflare provider as a stretch)
+   and recorded in the runbook. The app repo's Caddy trusts Cloudflare's ranges
+   (`trusted_proxies`) so the per-IP rate limit sees the real client address.
+6. **Rehearsed cutover with rollback.** A written runbook in `docs/`: lower DNS
+   TTL, rehearse on `vps.tictactoe.johe.my.id`, freeze writes, final
+   `pg_dump` from EC2 and restore on the Droplet, row-count check, flip DNS,
+   smoke test, watch. Rollback = flip DNS back to the EC2 Elastic IP (kept
+   running 48 hours). Downtime is measured during the rehearsal and the real
+   cutover and logged in `docs/`.
+7. **Retire AWS and write it up.** After 48 quiet hours, `terraform destroy`
    in TicTacToeInfra. README as a client case study: before/after diagram,
    runbook, measured downtime, rollback test, monthly cost before (about $25)
-   and after (about $17), and how to run the same kit on Hetzner or another VPS.
+   and after (about $17), outputs table, and how to run the same kit on
+   Hetzner or another VPS.
+
+Delivered in **TicTacToeCICD** (tracked in its own GOALS.md, needed for this
+project's cutover): GHCR push of the `linux/amd64` image, `deploy-do.yml` with
+smoke test and rollback to `last_good_tag`, secrets in a GitHub Environment
+written to `.env` (mode 600), nightly `pg_dump` to the backup bucket with one
+tested restore, uptime monitoring (Uptime Kuma or a free external check).
 
 ## Out of scope
 
-- Terraform for GitHub-to-DigitalOcean authentication. DigitalOcean has no
-  OIDC federation, so Terraform runs locally with an API token and CI only
-  checks fmt, validate and tflint.
+- The app's pipeline, Compose file, Caddyfile and backup job. They live in
+  TicTacToeCICD.
+- Terraform plan or apply from GitHub. DigitalOcean has no OIDC federation,
+  so Terraform runs locally with an API token and CI only runs checks.
 - Kubernetes, DOKS or multiple servers. One Droplet, Compose.
 - High availability or zero-downtime cutover. A few minutes of planned
   downtime with a write freeze is the honest small-business answer.
@@ -99,8 +135,9 @@ guards against forgotten resources.
 
 ## Constraints
 
-- Budget: about $17 a month (Droplet ~$12, Spaces $5). Add a DigitalOcean
-  billing alert ($5 or $10). Flag anything that adds cost before adding it.
+- Budget: about $17 a month (Droplet ~$12, Spaces $5). A DigitalOcean billing
+  alert ($5 or $10) is set by hand in the control panel (Terraform can't
+  create it). Flag anything that adds cost before adding it.
 - Test runs create and then destroy: Droplets bill by the hour even when off.
   The cutover itself needs the Droplet for about five days (rehearsal,
   cutover, 48-hour watch), roughly $2.
@@ -113,27 +150,25 @@ guards against forgotten resources.
 
 | Day | Work |
 |---|---|
-| 1 | DigitalOcean account, API token and Spaces key, Terraform for VPC + firewall + Droplet + reserved IP, cloud-init hardening, Tailscale (verify before closing SSH). Image to GHCR. App runs on the VM by IP. |
-| 2 | Caddy + HTTPS, Cloudflare DNS/WAF/rate limit, deploy workflow with smoke test and rollback, nightly `pg_dump` to Spaces with a tested restore, Uptime Kuma. Rehearsal on `vps.` subdomain with downtime measured. |
+| 1 | DigitalOcean account, billing alert, API token and Spaces keys. Terraform for VPC + firewall + Droplet + reserved IP + backup bucket, outputs, cloud-init hardening, Tailscale (verify before closing SSH), `checks.yml`. Hand outputs to TicTacToeCICD. |
+| 2 | In TicTacToeCICD: GHCR push, `deploy-do.yml`, nightly `pg_dump` with a tested restore, uptime check. Here: Cloudflare DNS/WAF/rate limit, cutover and rollback runbooks. Rehearsal on `vps.` subdomain with downtime measured. |
 | 3 | Real cutover and rollback test, 48-hour watch, AWS destroyed, README case study with diagram and cost table, Upwork portfolio entry. |
 
 ## Tools and software
 
 DigitalOcean (Droplet, Cloud Firewall, reserved IP, Spaces) · Terraform
-(>= 1.12) with the DigitalOcean provider · cloud-init · Ubuntu LTS · Docker +
-Compose · Caddy · Let's Encrypt · Cloudflare DNS, WAF and rate limiting ·
-Tailscale · GitHub Actions · GitHub Container Registry · UFW · fail2ban ·
-PostgreSQL (`pg_dump`) · Uptime Kuma · tflint · shellcheck · draw.io or Mermaid
+(>= 1.10) with the DigitalOcean provider · cloud-init · Ubuntu LTS · Docker +
+Compose · Cloudflare DNS, WAF and rate limiting · Tailscale · GitHub Actions ·
+UFW · fail2ban · tflint · shellcheck · draw.io or Mermaid
 
 ## Definition of done
 
-- [ ] `terraform apply` creates the VPC, Cloud Firewall, Droplet, reserved IP and Spaces bucket within the budget.
-- [ ] The VM is hardened by cloud-init: key-only SSH reachable only over Tailscale, UFW, fail2ban, unattended-upgrades.
-- [ ] The app image builds for amd64 and is pulled from GHCR.
-- [ ] A merge to `main` deploys to the VPS, smoke-tests and rolls back on failure (one logged rollback).
+- [ ] `terraform apply` creates the VPC, Cloud Firewall, Droplet, reserved IP and Spaces bucket within the budget, with all six contract outputs.
+- [ ] State lives in a Space; locking is either proven or documented as single-writer.
+- [ ] The VM is hardened by cloud-init: key-only SSH reachable only over Tailscale, UFW, fail2ban, unattended-upgrades, Docker.
+- [ ] `checks.yml` runs fmt, validate, tflint and shellcheck on every PR.
 - [ ] Cloudflare proxies the domain with Full (strict) TLS, WAF and a login rate limit.
-- [ ] Nightly `pg_dump` lands in Spaces and one restore has been tested.
-- [ ] Uptime monitoring alerts when the app is down.
+- [ ] TicTacToeCICD deploys to the Droplet with smoke test and rollback, and backs up nightly to the bucket (tracked there; linked from here).
 - [ ] Rehearsal and real cutover done with downtime measured; DNS rollback tested.
 - [ ] AWS stack destroyed after 48 quiet hours.
-- [ ] README has before/after diagrams, the runbook, downtime numbers, cost before and after, and how to reuse the kit on Hetzner or another VPS.
+- [ ] README has before/after diagrams, the runbook, downtime numbers, outputs table, cost before and after, and how to reuse the kit on Hetzner or another VPS.
