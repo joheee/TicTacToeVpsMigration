@@ -6,9 +6,17 @@ output "droplet_ipv4" {
   value       = module.compute.reserved_ip
 }
 
+# Kept for compatibility with TicTacToeCICD (DO_TAILSCALE_HOST). Tailscale is no
+# longer used: SSH is public and key-only, so this now holds the reserved IP the
+# deploy workflow connects to. Same value as ssh_host.
 output "tailscale_hostname" {
-  description = "Host the deploy workflow SSHes to over the tailnet (DO_TAILSCALE_HOST)."
-  value       = var.tailnet_domain == "" ? var.tailscale_hostname : "${var.tailscale_hostname}.${var.tailnet_domain}"
+  description = "Host the deploy workflow SSHes to (DO_TAILSCALE_HOST). Now the reserved IP; kept for the contract."
+  value       = module.compute.reserved_ip
+}
+
+output "ssh_host" {
+  description = "Host to SSH to as the deploy user. Prefer this over tailscale_hostname in new code."
+  value       = module.compute.reserved_ip
 }
 
 output "deploy_user" {

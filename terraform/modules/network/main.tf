@@ -9,11 +9,18 @@ resource "digitalocean_tag" "droplet" {
   name = var.name
 }
 
-# Inbound is HTTP and HTTPS only. There is no port 22: SSH goes over Tailscale,
-# which only needs outbound traffic.
+# Inbound is HTTP, HTTPS and SSH. SSH is open to the internet because the deploy
+# runs from GitHub-hosted runners, which have no fixed IP. It is protected by
+# key-only login, no root, MaxAuthTries 3 and fail2ban (see cloud-init).
 resource "digitalocean_firewall" "this" {
   name = "${var.name}-fw"
   tags = [digitalocean_tag.droplet.name]
+
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "22"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
 
   inbound_rule {
     protocol         = "tcp"
@@ -27,7 +34,7 @@ resource "digitalocean_firewall" "this" {
     source_addresses = ["0.0.0.0/0", "::/0"]
   }
 
-  # Outbound is open: GHCR, Let's Encrypt, Spaces, apt and Tailscale need it.
+  # Outbound is open: GHCR, Let's Encrypt, Spaces, and apt need it.
   outbound_rule {
     protocol              = "tcp"
     port_range            = "1-65535"

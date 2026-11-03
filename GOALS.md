@@ -22,7 +22,7 @@ GitHub Actions variables, and the app repo owns the pipeline.
 | Repo | Holds |
 |---|---|
 | **TicTacToeVpsMigration** (this repo) | Terraform for the Droplet, VPC, Cloud Firewall, reserved IP and backup bucket; cloud-init hardening; checks workflow; cutover and rollback runbooks, diagrams, downtime log, cost table |
-| **TicTacToeCICD** | The app, Compose, Caddyfile, and the pipeline: GHCR push, `deploy-do.yml` (Tailscale + SSH deploy, smoke test, rollback), nightly `pg_dump` job. Its AWS `deploy.yml` stays until cutover. |
+| **TicTacToeCICD** | The app, Compose, Caddyfile, and the pipeline: GHCR push, `deploy-do.yml` (SSH deploy, smoke test, rollback), nightly `pg_dump` job. Its AWS `deploy.yml` stays until cutover. |
 | **TicTacToeInfra** | The AWS stack being retired. No DigitalOcean resources; destroyed after the cutover. |
 
 ### Outputs contract
@@ -33,7 +33,7 @@ or removing one is a breaking change for the app repo; add new ones freely.
 | Terraform output | App repo variable | What it is |
 |---|---|---|
 | `droplet_ipv4` | `DO_DROPLET_IP` | Reserved IP the DNS record points at |
-| `tailscale_hostname` | `DO_TAILSCALE_HOST` | Host the deploy workflow SSHes to over the tailnet |
+| `tailscale_hostname` | `DO_TAILSCALE_HOST` | Host the deploy workflow SSHes to. Name kept for the contract; now the reserved IP (same as `ssh_host`) |
 | `deploy_user` | `DO_DEPLOY_USER` | Non-root user the deploy runs as |
 | `app_url` | `DO_APP_URL` | Public URL for the smoke test |
 | `backup_bucket` | `DO_BACKUP_BUCKET` | Spaces bucket for nightly `pg_dump` files |
@@ -88,7 +88,8 @@ guards against forgotten resources.
 3. **Hardened server from cloud-init.** Ubuntu LTS, non-root `deploy` user,
    SSH keys only (no passwords, no root login), UFW, fail2ban,
    unattended-upgrades, Docker + Compose plugin, swap file, `/opt/app`. SSH is
-   **not open to the internet**: admin and CI reach the VM over Tailscale.
+   public but key-only (no root login, fail2ban) so GitHub-hosted runners can
+   deploy; Tailscale is not used.
    Anything beyond this (app files, `.env`, containers) belongs to the app
    pipeline.
 4. **Checks in CI.** `checks.yml` runs `terraform fmt -check`, `validate`,
@@ -150,7 +151,7 @@ tested restore, uptime monitoring (Uptime Kuma or a free external check).
 
 | Day | Work |
 |---|---|
-| 1 | DigitalOcean account, billing alert, API token and Spaces keys. Terraform for VPC + firewall + Droplet + reserved IP + backup bucket, outputs, cloud-init hardening, Tailscale (verify before closing SSH), `checks.yml`. Hand outputs to TicTacToeCICD. |
+| 1 | DigitalOcean account, billing alert, API token and Spaces keys. Terraform for VPC + firewall + Droplet + reserved IP + backup bucket, outputs, cloud-init hardening (verify key login), `checks.yml`. Hand outputs to TicTacToeCICD. |
 | 2 | In TicTacToeCICD: GHCR push, `deploy-do.yml`, nightly `pg_dump` with a tested restore, uptime check. Here: Cloudflare DNS/WAF/rate limit, cutover and rollback runbooks. Rehearsal on `vps.` subdomain with downtime measured. |
 | 3 | Real cutover and rollback test, 48-hour watch, AWS destroyed, README case study with diagram and cost table, Upwork portfolio entry. |
 
@@ -158,14 +159,14 @@ tested restore, uptime monitoring (Uptime Kuma or a free external check).
 
 DigitalOcean (Droplet, Cloud Firewall, reserved IP, Spaces) · Terraform
 (>= 1.10) with the DigitalOcean provider · cloud-init · Ubuntu LTS · Docker +
-Compose · Cloudflare DNS, WAF and rate limiting · Tailscale · GitHub Actions ·
+Compose · Cloudflare DNS, WAF and rate limiting · GitHub Actions ·
 UFW · fail2ban · tflint · shellcheck · draw.io or Mermaid
 
 ## Definition of done
 
 - [ ] `terraform apply` creates the VPC, Cloud Firewall, Droplet, reserved IP and Spaces bucket within the budget, with all six contract outputs.
 - [ ] State lives in a Space; locking is either proven or documented as single-writer.
-- [ ] The VM is hardened by cloud-init: key-only SSH reachable only over Tailscale, UFW, fail2ban, unattended-upgrades, Docker.
+- [ ] The VM is hardened by cloud-init: key-only public SSH with no root login, UFW, fail2ban, unattended-upgrades, Docker.
 - [ ] `checks.yml` runs fmt, validate, tflint and shellcheck on every PR.
 - [ ] Cloudflare proxies the domain with Full (strict) TLS, WAF and a login rate limit.
 - [ ] TicTacToeCICD deploys to the Droplet with smoke test and rollback, and backs up nightly to the bucket (tracked there; linked from here).

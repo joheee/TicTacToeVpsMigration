@@ -59,24 +59,6 @@ variable "deploy_ssh_public_keys" {
   }
 }
 
-variable "tailscale_hostname" {
-  description = "Hostname the Droplet registers on the tailnet; the deploy workflow SSHes to it."
-  type        = string
-  default     = "tictactoe-do"
-}
-
-variable "tailnet_domain" {
-  description = "Tailnet DNS suffix such as tailnet-name.ts.net. Empty means the tailscale_hostname output is the short name."
-  type        = string
-  default     = ""
-}
-
-variable "tailscale_auth_key" {
-  description = "Tailscale auth key. Use a one-time, short-expiry, non-reusable key: it ends up in user_data and in Terraform state."
-  type        = string
-  sensitive   = true
-}
-
 variable "app_hostname" {
   description = "Public hostname of the app. Use the vps. rehearsal host first and switch to the real one at cutover."
   type        = string

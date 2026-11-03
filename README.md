@@ -42,7 +42,7 @@ this repo's outputs as GitHub Actions variables.
 | Repo | Holds |
 |---|---|
 | **TicTacToeVpsMigration** (this repo) | Terraform for the Droplet, VPC, Cloud Firewall, reserved IP and backup bucket; cloud-init hardening; checks workflow; cutover and rollback runbooks, diagrams, downtime log, cost table |
-| **TicTacToeCICD** | The app, Compose, Caddyfile, and the pipeline: GHCR push, `deploy-do.yml` (Tailscale + SSH deploy, smoke test, rollback), nightly `pg_dump` job. Its AWS `deploy.yml` stays until cutover. |
+| **TicTacToeCICD** | The app, Compose, Caddyfile, and the pipeline: GHCR push, `deploy-do.yml` (SSH deploy, smoke test, rollback), nightly `pg_dump` job. Its AWS `deploy.yml` stays until cutover. |
 | **TicTacToeInfra** | The AWS stack being retired. No DigitalOcean resources; destroyed after the cutover. |
 
 ```
@@ -109,11 +109,10 @@ flowchart LR
     edge[Proxy, Full strict TLS<br/>WAF, rate limit]
   end
 
-  ts{{Tailscale tailnet}}
   op[Operator laptop<br/>terraform plan, apply<br/>token in env vars]
 
   subgraph DO[DigitalOcean sgp1]
-    fw[Cloud Firewall<br/>80 and 443 only, no 22]
+    fw[Cloud Firewall<br/>22, 80 and 443]
     spaces[(Spaces bucket<br/>nightly pg_dump<br/>7-day expiry)]
 
     subgraph VPC[VPC 10.10.0.0/24]
@@ -123,15 +122,16 @@ flowchart LR
 
   user((Users)) -- HTTPS --> edge -- "80 / 443" --> fw --> drop
   app -- push image --> ghcr
-  app -- "Tailscale + SSH" --> ts -.-> drop
-  op -- "SSH over tailnet" --> ts
+  app -- "SSH, key-only" --> fw
+  op -- "SSH, key-only" --> fw
   op -- "terraform apply" --> DO
   drop -- pull image --> ghcr
   drop -- nightly pg_dump --> spaces
 ```
 
-SSH is not reachable from the internet. The deploy workflow and the admin reach
-the Droplet over the tailnet, which only needs outbound traffic.
+SSH (port 22) is open to the internet because the deploy runs from GitHub-hosted
+runners, which have no fixed IP. It is protected by key-only login, no root,
+`AllowUsers deploy`, `MaxAuthTries 3` and fail2ban.
 
 ### What changes
 
@@ -139,8 +139,8 @@ the Droplet over the tailnet, which only needs outbound traffic.
 |---|---|---|
 | Compute | EC2 | Droplet, `s-1vcpu-2gb`, `sgp1` |
 | Image registry | ECR | GHCR (free, no new secrets, portable) |
-| Deploy channel | SSM | Tailscale + SSH, key-only |
-| Public ingress | Security group | Cloud Firewall, 80/443 only, plus UFW |
+| Deploy channel | SSM | Public SSH, key-only |
+| Public ingress | Security group | Cloud Firewall (22, 80, 443), plus UFW |
 | Backups | n/a in this repo | Spaces bucket, 7-day lifecycle rule |
 | Edge | n/a | Cloudflare proxy, Full (strict) TLS, WAF, rate limit |
 | Database | PostgreSQL in Compose | PostgreSQL in Compose (unchanged, restored from a dump) |
@@ -160,11 +160,14 @@ or removing one is a breaking change** for the app repo. Adding new ones is fine
 | Terraform output | App repo variable | What it is |
 |---|---|---|
 | `droplet_ipv4` | `DO_DROPLET_IP` | Reserved IP the DNS record points at |
-| `tailscale_hostname` | `DO_TAILSCALE_HOST` | Host the deploy workflow SSHes to over the tailnet |
+| `tailscale_hostname` | `DO_TAILSCALE_HOST` | Host the deploy workflow SSHes to. Name kept for the contract; now the reserved IP (same value as `ssh_host`) |
 | `deploy_user` | `DO_DEPLOY_USER` | Non-root user the deploy runs as |
 | `app_url` | `DO_APP_URL` | Public URL for the smoke test |
 | `backup_bucket` | `DO_BACKUP_BUCKET` | Spaces bucket for nightly `pg_dump` files |
 | `spaces_endpoint` | `DO_SPACES_ENDPOINT` | S3-compatible endpoint for that bucket |
+
+New output (not part of the original contract): `ssh_host`, the reserved IP to
+SSH to as the deploy user. Prefer it over `tailscale_hostname` in new code.
 
 Read them with `terraform output -raw <name>`.
 
@@ -175,9 +178,8 @@ Read them with `terraform output -raw <name>`.
 - A DigitalOcean account with a **billing alert set by hand** in the control
   panel ($5 or $10; Terraform cannot create it).
 - A DigitalOcean API token (read and write) and a Spaces key pair.
-- A [Tailscale](https://tailscale.com) account and a **one-time, short-expiry,
-  non-reusable** auth key. It ends up in `user_data` and in Terraform state, so
-  treat the state file as a secret.
+- An SSH key pair for yourself and one for CI (the CI private key goes into
+  TicTacToeCICD's GitHub Environment; only the public keys come here).
 - Terraform >= 1.10, `tflint` and `shellcheck` for the local checks.
 
 ### Credentials: environment variables only
@@ -188,7 +190,7 @@ export SPACES_ACCESS_KEY_ID="..."
 export SPACES_SECRET_ACCESS_KEY="..."
 ```
 
-Never commit a token, a Spaces key, a Tailscale auth key, `*.tfstate`,
+Never commit a token, a Spaces key, `*.tfstate`,
 `.terraform/`, a `.env` file or a real `.tfvars` file. The `.gitignore` covers
 them; only `*.example` files are committed.
 
@@ -220,9 +222,6 @@ attached to a Droplet. For cheap test runs set `create_backup_bucket = false`
 | `droplet_image` | `ubuntu-24-04-x64` | |
 | `admin_ssh_public_key` | required | Registered with DigitalOcean; root login is disabled by cloud-init |
 | `deploy_ssh_public_keys` | required | Your key and the CI key for the `deploy` user |
-| `tailscale_hostname` | `tictactoe-do` | Name on the tailnet |
-| `tailnet_domain` | `""` | For example `tailnet-name.ts.net`; empty makes the output the short name |
-| `tailscale_auth_key` | required, sensitive | One-time key |
 | `app_hostname` | `vps.tictactoe.johe.my.id` | Rehearsal host first, the real host at cutover |
 | `create_backup_bucket` | `true` | |
 | `backup_bucket_name` | `tictactoe-prod-backups` | |
@@ -235,8 +234,8 @@ attached to a Droplet. For cheap test runs set `create_backup_bucket = false`
   them would replace the Droplet and wipe the database on its disk. An edit to
   the cloud-init template therefore applies only to a **new** Droplet.
 - **The firewall attaches by tag**, so it exists before the Droplet does.
-- **Outbound traffic is open** because GHCR, Let's Encrypt, Spaces, apt and
-  Tailscale need it.
+- **Outbound traffic is open** because GHCR, Let's Encrypt, Spaces and apt
+  need it.
 - **Budget:** about $17 a month (Droplet about $12, Spaces $5). Skip DigitalOcean
   backups, snapshots, volumes, load balancers and managed databases; they add
   cost the plan does not need.
@@ -248,27 +247,26 @@ sets up:
 
 - a non-root `deploy` user (key-only, passwordless sudo, member of `docker`)
 - SSH: no passwords, no root login, `AllowUsers deploy`, `MaxAuthTries 3`
-- UFW: deny incoming; allow 80 and 443; allow SSH only on the `tailscale0`
-  interface
+- UFW: deny incoming; allow 22, 80 and 443
 - fail2ban for `sshd`, and unattended-upgrades
 - Docker and the Compose plugin from Docker's official apt repository, with
   log rotation (`10m` x 3 files)
-- Tailscale from its official apt repository, joined with a one-time auth key
-  that is deleted right after `tailscale up`
 - a 2 GB swap file, and `/opt/app` owned by `deploy`
 
-Order matters: **Tailscale joins before UFW is enabled**, so the server never
-ends up with no way in.
+Order matters: **UFW allows port 22 before it is enabled**, so the bootstrap
+never cuts off its own SSH session.
 
 Anything beyond this (app files, `.env`, containers) belongs to the app
 pipeline in TicTacToeCICD.
 
-> **Risk to know about:** because `AllowUsers deploy` is set and port 22 is not
-> open to the internet, a failed `tailscale up` leaves the Droplet with no SSH
-> access at all. The recovery path is `terraform destroy` and a new apply. This
-> is why the first test run must confirm Tailscale access before anything else
-> is relied on. Docker publishes container ports around UFW, so the Cloud
-> Firewall is the real guard for 80 and 443.
+> **Risk to know about:** SSH is open to the internet, so the server will see
+> constant bot login attempts. That is why login is key-only with no root and
+> `AllowUsers deploy`, and why fail2ban bans repeat offenders. Keep the deploy
+> private key only in a GitHub Environment secret, and rotate it if it leaks.
+> Docker publishes container ports around UFW, so the Cloud Firewall is the real
+> guard for 80 and 443. If you later need a closed port 22, restrict the
+> firewall rule to a fixed IP and deploy from there, or reintroduce a private
+> network such as Tailscale.
 
 ## Cloudflare settings
 
@@ -320,7 +318,7 @@ sequenceDiagram
 
 ### Before the day
 
-1. Droplet is applied, Tailscale access is confirmed, and the deploy workflow
+1. Droplet is applied, key-only SSH login as `deploy` works, and the deploy workflow
    has deployed the app to it successfully at least once.
 2. The nightly `pg_dump` has run to the Spaces bucket and one restore has been
    tested (tracked in TicTacToeCICD).
@@ -355,10 +353,10 @@ Start a stopwatch at step 2 and stop it at step 7.
    docker compose exec -T db pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" > final.dump
    ```
 
-4. **Copy and restore** on the Droplet (over Tailscale):
+4. **Copy and restore** on the Droplet (over SSH):
 
    ```bash
-   scp final.dump deploy@tictactoe-do:/opt/app/
+   scp final.dump "deploy@$(terraform output -raw ssh_host):/opt/app/"
    # on the Droplet:
    docker compose exec -T db pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists < final.dump
    ```
@@ -476,12 +474,11 @@ scripts/extract-bootstrap.sh > /tmp/bootstrap-vps.sh && shellcheck -s bash /tmp/
 The kit is provider-agnostic except for `terraform/`.
 
 1. **Replace `terraform/`** with that provider's equivalent: a server, a
-   provider firewall that opens only 80 and 443, a stable IP, and a backup
+   provider firewall that opens only 22, 80 and 443, a stable IP, and a backup
    bucket (Hetzner has Object Storage; any S3-compatible store works).
 2. **Pass `cloud-init/cloud-config.yaml.tftpl` as user data** unchanged. It uses
-   only Ubuntu packages, Docker's and Tailscale's apt repositories, and standard
-   tools. Keep the template variables (`deploy_user`, `deploy_ssh_public_keys`,
-   `tailscale_hostname`, `tailscale_auth_key`).
+   only Ubuntu packages, Docker's apt repository and standard tools. Keep the
+   template variables (`deploy_user`, `deploy_ssh_public_keys`).
 3. **Keep the outputs contract** (the six names in the table above), so
    TicTacToeCICD works without changes.
 4. Everything else, including the runbooks, Cloudflare settings and CI checks,
@@ -507,7 +504,7 @@ Destroying the AWS stack is the last step and is done only when asked.
 
 - [ ] `terraform apply` creates the VPC, Cloud Firewall, Droplet, reserved IP and Spaces bucket within the budget, with all six contract outputs.
 - [ ] State lives in a Space; locking is either proven or documented as single-writer.
-- [ ] The VM is hardened by cloud-init: key-only SSH reachable only over Tailscale, UFW, fail2ban, unattended-upgrades, Docker.
+- [ ] The VM is hardened by cloud-init: key-only public SSH with no root login, UFW, fail2ban, unattended-upgrades, Docker.
 - [ ] `checks.yml` runs fmt, validate, tflint and shellcheck on every PR.
 - [ ] Cloudflare proxies the domain with Full (strict) TLS, WAF and a login rate limit.
 - [ ] TicTacToeCICD deploys to the Droplet with smoke test and rollback, and backs up nightly to the bucket (tracked there).

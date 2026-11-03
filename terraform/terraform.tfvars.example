@@ -15,11 +15,6 @@ deploy_ssh_public_keys = [
   "ssh-ed25519 AAAA... github-actions-deploy",
 ]
 
-tailscale_hostname = "tictactoe-do"
-tailnet_domain     = "" # for example "tailnet-name.ts.net"
-# One-time, short-expiry, non-reusable key from the Tailscale admin console.
-tailscale_auth_key = "tskey-auth-REPLACE_ME"
-
 app_hostname = "vps.tictactoe.johe.my.id" # switch to tictactoe.johe.my.id at cutover
 
 # Set false for cheap test runs (Spaces is $5 a month).

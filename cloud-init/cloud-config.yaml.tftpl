@@ -1,5 +1,5 @@
 #cloud-config
-# Hardens a fresh Ubuntu LTS VPS and installs Docker and Tailscale. Nothing here is
+# Hardens a fresh Ubuntu LTS VPS and installs Docker. Nothing here is
 # provider-specific. Rendered by Terraform's templatefile(): a shell variable written
 # with braces would need a doubled dollar sign, so the script below avoids them.
 # Everything beyond this (app files, .env, containers) belongs to the app pipeline.
@@ -21,8 +21,8 @@ users:
   - name: ${deploy_user}
     shell: /bin/bash
     lock_passwd: true
-    # Key-only login, reachable over Tailscale only. There is no password, so
-    # sudo has to be passwordless; the docker group is root-equivalent anyway.
+    # Key-only login over public SSH. There is no password, so sudo has to be
+    # passwordless; the docker group is root-equivalent anyway.
     sudo: ALL=(ALL) NOPASSWD:ALL
     ssh_authorized_keys: ${jsonencode(deploy_ssh_public_keys)}
 
@@ -56,11 +56,6 @@ write_files:
     content: |
       {"log-driver": "json-file", "log-opts": {"max-size": "10m", "max-file": "3"}}
 
-  # Read once by `tailscale up`, then deleted by the bootstrap script.
-  - path: /run/tailscale-authkey
-    permissions: "0600"
-    content: ${jsonencode(tailscale_auth_key)}
-
   - path: /usr/local/sbin/bootstrap-vps.sh
     permissions: "0700"
     content: |
@@ -70,18 +65,14 @@ write_files:
       # shellcheck source=/dev/null
       codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
 
-      # Docker and Tailscale from their official apt repositories.
+      # Docker from its official apt repository.
       install -m 0755 -d /etc/apt/keyrings
       curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
       chmod a+r /etc/apt/keyrings/docker.asc
       echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $codename stable" \
         > /etc/apt/sources.list.d/docker.list
-      curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/$codename.noarmor.gpg" \
-        -o /usr/share/keyrings/tailscale-archive-keyring.gpg
-      curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/$codename.tailscale-keyring.list" \
-        -o /etc/apt/sources.list.d/tailscale.list
       apt-get update
-      apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin tailscale
+      apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
       systemctl enable --now docker
       usermod -aG docker ${deploy_user}
 
@@ -94,18 +85,14 @@ write_files:
         echo '/swapfile none swap sw 0 0' >> /etc/fstab
       fi
 
-      # Join the tailnet before the firewall is switched on.
-      systemctl enable --now tailscaled
-      tailscale up --auth-key=file:/run/tailscale-authkey --hostname=${tailscale_hostname}
-      rm -f /run/tailscale-authkey
-
-      # UFW: 80 and 443 from anywhere, SSH on the Tailscale interface only.
-      # Docker publishes ports around UFW, so the provider firewall is the real guard.
+      # UFW: SSH, HTTP and HTTPS from anywhere. SSH must be allowed before UFW is
+      # enabled, or this session would be cut off. Docker publishes ports around
+      # UFW, so the provider firewall is the real guard for 80 and 443.
       ufw default deny incoming
       ufw default allow outgoing
+      ufw allow 22/tcp
       ufw allow 80/tcp
       ufw allow 443/tcp
-      ufw allow in on tailscale0 to any port 22 proto tcp
       ufw --force enable
 
       systemctl restart ssh

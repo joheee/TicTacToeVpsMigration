@@ -29,8 +29,6 @@ module "compute" {
   user_data = templatefile("${path.root}/../cloud-init/cloud-config.yaml.tftpl", {
     deploy_user            = local.deploy_user
     deploy_ssh_public_keys = var.deploy_ssh_public_keys
-    tailscale_hostname     = var.tailscale_hostname
-    tailscale_auth_key     = var.tailscale_auth_key
   })
 }
 

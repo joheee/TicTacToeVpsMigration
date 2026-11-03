@@ -23,10 +23,10 @@ the "move an app off AWS to a cheap VPS, safely and measurably" story clearer.
 ## Layout
 
 - `terraform/`: `digitalocean` provider, project, VPC, SSH key, Cloud Firewall
-  (80/443 only, no 22), Droplet, reserved IP and its assignment, Spaces bucket
+  (22, 80 and 443), Droplet, reserved IP and its assignment, Spaces bucket
   for backups (7-day lifecycle rule), outputs. Applied locally. State is local
   while testing, then a hand-made Space via the S3 backend.
-- `cloud-init/`: user-data that hardens Ubuntu and installs Docker, Tailscale,
+- `cloud-init/`: user-data that hardens Ubuntu and installs Docker,
   UFW, fail2ban, unattended-upgrades, and creates the `deploy` user and
   `/opt/app`.
 - `docs/`: cutover runbook, rollback runbook, Cloudflare settings,
@@ -37,7 +37,7 @@ the "move an app off AWS to a cheap VPS, safely and measurably" story clearer.
 ## Working rules
 
 - Never commit secrets, `*.tfstate`, `.terraform/`, DigitalOcean API tokens,
-  Spaces keys, Tailscale auth keys, `.env` files or real tfvars. Pass the
+  Spaces keys, `.env` files or real tfvars. Pass the
   token and Spaces keys as environment variables (`DIGITALOCEAN_TOKEN`,
   `SPACES_ACCESS_KEY_ID`, `SPACES_SECRET_ACCESS_KEY`). Commit `*.example`
   files.
@@ -46,9 +46,10 @@ the "move an app off AWS to a cheap VPS, safely and measurably" story clearer.
   managed databases. Droplets bill hourly even when powered off, so test runs
   end with `terraform destroy`, never a shutdown. A billing alert must exist
   (set by hand in the control panel).
-- No public SSH: the Cloud Firewall and UFW allow only 80 and 443 from the
-  internet; SSH only over Tailscale, keys only, no root login. Confirm
-  Tailscale access works before closing everything else.
+- SSH is public (decided to keep deploys simple; GitHub runners have no fixed
+  IP): the Cloud Firewall and UFW allow 22, 80 and 443. Keys only, no
+  passwords, no root login, `AllowUsers deploy`, fail2ban. Tailscale is not
+  used. Confirm key login works before relying on the server.
 - Outputs are a contract with TicTacToeCICD. Don't rename or remove the
   outputs listed in `GOALS.md`; add new ones and note them in the README.
 - Don't add app deploy logic here. Changes to TicTacToeCICD are additive until
