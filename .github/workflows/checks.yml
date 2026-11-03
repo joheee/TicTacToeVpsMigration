@@ -1,0 +1,64 @@
+name: checks
+
+# Static checks only. There is no terraform plan or apply here: DigitalOcean has
+# no OIDC federation, so the API token stays off GitHub and Terraform runs locally.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+          terraform_wrapper: false
+
+      - name: fmt
+        run: terraform fmt -check -recursive -diff
+
+      - name: validate
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.64.0
+
+      - name: tflint
+        run: |
+          tflint --init
+          tflint --recursive
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract the cloud-init bootstrap script
+        run: |
+          mkdir -p "$RUNNER_TEMP/extracted"
+          scripts/extract-bootstrap.sh > "$RUNNER_TEMP/extracted/bootstrap-vps.sh"
+
+      # shellcheck is preinstalled on ubuntu-latest runners.
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          shellcheck -s bash "$RUNNER_TEMP/extracted/bootstrap-vps.sh"
+          shellcheck scripts/*.sh
