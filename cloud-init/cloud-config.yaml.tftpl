@@ -67,6 +67,7 @@ write_files:
       #!/usr/bin/env bash
       set -euo pipefail
 
+      # shellcheck source=/dev/null
       codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
 
       # Docker and Tailscale from their official apt repositories.
