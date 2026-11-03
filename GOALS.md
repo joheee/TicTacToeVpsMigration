@@ -162,28 +162,44 @@ DigitalOcean (Droplet, Cloud Firewall, reserved IP, Spaces) · Terraform
 Compose · Cloudflare DNS, WAF and rate limiting · GitHub Actions ·
 UFW · fail2ban · tflint · shellcheck · draw.io or Mermaid
 
-## Status (2026-11-04)
+## Status: paused (4 Nov 2026)
 
-Written but not yet run against DigitalOcean (no `terraform apply` so far, no
-state file):
+**Paused because DigitalOcean is blocked.** The account is still on the free
+tier and the payment card can't be added to upgrade it, so no Droplet can be
+created. Nothing here has been applied (no `terraform apply`, no state file, no
+DigitalOcean resources, nothing billing). The AWS stack in TicTacToeInfra stays
+as it is: it is not retired while this project is paused.
 
-- Root Terraform, cloud-init template and `checks.yml` are in place; `fmt` and
-  `validate` pass.
-- `backend.hcl.example` is added for the Space state backend. The `backend "s3"`
-  block is deliberately not in `versions.tf` yet; state is local until the
-  first apply works, then `terraform init -backend-config=backend.hcl -migrate-state`.
-- The runbooks (bring-up checks, rehearsal, rollback test, Cloudflare settings,
-  downtime log, cost table) live in `README.md` for now, not `docs/`. Their
-  `TODO`s need real runs to fill in.
-- Not done yet: `tflint` and `shellcheck` on the latest changes, a commit of the
-  README, `versions.tf` and `backend.hcl.example` changes, the billing alert,
-  and everything in TicTacToeCICD.
-- Open questions: confirm that one Spaces subscription covers the state Space
-  (no extra cost); confirm the Compose service, database user and database name
-  in TicTacToeCICD for the cutover commands.
+Done (on `main`, `checks.yml` green on b9df969):
 
-Next: apply once, verify key login, hand the outputs to TicTacToeCICD, then
-move state to the Space.
+- Root Terraform and four modules (`network`, `compute`, `storage`, `project`)
+  with all six contract outputs; Tailscale removed, SSH is public and key-only.
+- Cloud-init hardening template and `scripts/extract-bootstrap.sh`.
+- `checks.yml`: fmt, validate, tflint and shellcheck on every PR and push.
+- `backend.hcl.example` for the Space state backend (the `backend "s3"` block is
+  deliberately not in `versions.tf` yet; state stays local until the first apply).
+- Runbook drafts in `README.md` (bring-up checks, rehearsal, rollback test,
+  Cloudflare settings, downtime log, cost table), with `TODO`s that need real runs.
+
+Left (all need a working cloud account):
+
+- First `terraform apply`, key login check, outputs handed to TicTacToeCICD.
+- State moved to a Space; locking tested or documented as single-writer.
+- Billing alert, Cloudflare proxy/WAF/rate limit, rehearsal, cutover, rollback
+  test, AWS retirement and the README case study.
+- Open questions: does one Spaces subscription cover the state Space; the Compose
+  service, database user and database name for the cutover commands.
+
+How to resume:
+
+1. Fix billing on DigitalOcean (card accepted, or another payment method the
+   account allows), set the billing alert, create the API token and Spaces keys.
+2. `terraform init && terraform plan`, review, apply once, verify key login as
+   `deploy`, then continue with the Plan above from day 1.
+3. If DigitalOcean stays blocked, the kit is meant to be provider-agnostic: only
+   the root `*.tf` and `modules/` are DigitalOcean-specific. Swapping the target
+   (for example Hetzner) means new Terraform for those files and an update to
+   "Why DigitalOcean"; cloud-init, the runbooks and the outputs contract stay.
 
 ## Definition of done
 
