@@ -17,12 +17,12 @@ the "move an app off AWS to a cheap VPS, safely and measurably" story clearer.
   project 4).
 - Reuse project 1/4 Terraform style (versions pinned, small files by concern,
   modules where they help).
-- The kit should stay provider-agnostic: only `terraform/` is
-  DigitalOcean-specific.
+- The kit should stay provider-agnostic: only the Terraform at the repo root
+  (`*.tf`, `modules/`) is DigitalOcean-specific.
 
 ## Layout
 
-- `terraform/`: `digitalocean` provider, project, VPC, SSH key, Cloud Firewall
+- Repo root (`*.tf`, `modules/`): `digitalocean` provider, project, VPC, SSH key, Cloud Firewall
   (22, 80 and 443), Droplet, reserved IP and its assignment, Spaces bucket
   for backups (7-day lifecycle rule), outputs. Applied locally. State is local
   while testing, then a hand-made Space via the S3 backend.

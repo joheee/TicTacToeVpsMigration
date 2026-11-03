@@ -47,18 +47,18 @@ this repo's outputs as GitHub Actions variables.
 
 ```
 .
-├── terraform/            DigitalOcean provider, root module and four child modules
-│   └── modules/
-│       ├── network/      VPC, tag, Cloud Firewall (80/443 only)
-│       ├── compute/      SSH key, Droplet, reserved IP and its assignment
-│       ├── storage/      Spaces backup bucket with a 7-day lifecycle rule
-│       └── project/      DigitalOcean project that groups the resources
+├── *.tf                  DigitalOcean provider and root module (main, variables, outputs, versions)
+├── modules/              four child modules
+│   ├── network/          VPC, tag, Cloud Firewall (80/443 only)
+│   ├── compute/          SSH key, Droplet, reserved IP and its assignment
+│   ├── storage/          Spaces backup bucket with a 7-day lifecycle rule
+│   └── project/          DigitalOcean project that groups the resources
 ├── cloud-init/           user-data template that hardens Ubuntu (provider-agnostic)
 ├── scripts/              extract-bootstrap.sh, used by CI to shellcheck the embedded script
 └── .github/workflows/    checks.yml (no plan or apply from CI)
 ```
 
-Only `terraform/` is DigitalOcean-specific. Everything from `cloud-init/`
+Only the Terraform (`*.tf` and `modules/`) is DigitalOcean-specific. Everything from `cloud-init/`
 upward runs on any Ubuntu VPS.
 
 ## Architecture, before and after
@@ -197,7 +197,6 @@ them; only `*.example` files are committed.
 ### Plan, apply, destroy
 
 ```bash
-cd terraform
 cp terraform.tfvars.example terraform.tfvars   # git-ignored; fill in the placeholders
 terraform init
 terraform plan                                  # read it before applying
@@ -465,15 +464,15 @@ Run the same checks before every commit:
 
 ```bash
 terraform fmt -recursive
-(cd terraform && terraform init -backend=false && terraform validate && tflint --init && tflint --recursive)
+terraform init -backend=false && terraform validate && tflint --init && tflint --recursive
 scripts/extract-bootstrap.sh > /tmp/bootstrap-vps.sh && shellcheck -s bash /tmp/bootstrap-vps.sh scripts/*.sh
 ```
 
 ## Reusing the kit on Hetzner or another VPS
 
-The kit is provider-agnostic except for `terraform/`.
+The kit is provider-agnostic except for the Terraform (`*.tf` and `modules/`).
 
-1. **Replace `terraform/`** with that provider's equivalent: a server, a
+1. **Replace the Terraform** (`*.tf` and `modules/`) with that provider's equivalent: a server, a
    provider firewall that opens only 22, 80 and 443, a stable IP, and a backup
    bucket (Hetzner has Object Storage; any S3-compatible store works).
 2. **Pass `cloud-init/cloud-config.yaml.tftpl` as user data** unchanged. It uses

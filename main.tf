@@ -26,7 +26,7 @@ module "compute" {
 
   # cloud-init lives at the repo root so the rest of the kit stays
   # provider-agnostic; this module only passes it to the Droplet.
-  user_data = templatefile("${path.root}/../cloud-init/cloud-config.yaml.tftpl", {
+  user_data = templatefile("${path.root}/cloud-init/cloud-config.yaml.tftpl", {
     deploy_user            = local.deploy_user
     deploy_ssh_public_keys = var.deploy_ssh_public_keys
   })
