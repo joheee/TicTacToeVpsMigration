@@ -1,0 +1,29 @@
+# Copy to terraform.tfvars (git-ignored) and fill in the placeholders.
+# Credentials are NOT set here; export them in your shell instead:
+#   DIGITALOCEAN_TOKEN, SPACES_ACCESS_KEY_ID, SPACES_SECRET_ACCESS_KEY
+project     = "tictactoe"
+environment = "prod"
+region      = "sgp1"
+vpc_cidr    = "10.10.0.0/24"
+
+droplet_size  = "s-1vcpu-2gb"
+droplet_image = "ubuntu-24-04-x64"
+
+admin_ssh_public_key = "ssh-ed25519 AAAA... you@laptop"
+deploy_ssh_public_keys = [
+  "ssh-ed25519 AAAA... you@laptop",
+  "ssh-ed25519 AAAA... github-actions-deploy",
+]
+
+tailscale_hostname = "tictactoe-do"
+tailnet_domain     = "" # for example "tailnet-name.ts.net"
+# One-time, short-expiry, non-reusable key from the Tailscale admin console.
+tailscale_auth_key = "tskey-auth-REPLACE_ME"
+
+app_hostname = "vps.tictactoe.johe.my.id" # switch to tictactoe.johe.my.id at cutover
+
+# Set false for cheap test runs (Spaces is $5 a month).
+create_backup_bucket        = true
+backup_bucket_name          = "tictactoe-prod-backups"
+backup_retention_days       = 7
+backup_bucket_force_destroy = false

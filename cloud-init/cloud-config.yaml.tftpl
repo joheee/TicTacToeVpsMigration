@@ -1,0 +1,117 @@
+#cloud-config
+# Hardens a fresh Ubuntu LTS VPS and installs Docker and Tailscale. Nothing here is
+# provider-specific. Rendered by Terraform's templatefile(): a shell variable written
+# with braces would need a doubled dollar sign, so the script below avoids them.
+# Everything beyond this (app files, .env, containers) belongs to the app pipeline.
+
+package_update: true
+package_upgrade: true
+packages:
+  - ca-certificates
+  - curl
+  - fail2ban
+  - gnupg
+  - ufw
+  - unattended-upgrades
+
+ssh_pwauth: false
+disable_root: true
+
+users:
+  - name: ${deploy_user}
+    shell: /bin/bash
+    lock_passwd: true
+    # Key-only login, reachable over Tailscale only. There is no password, so
+    # sudo has to be passwordless; the docker group is root-equivalent anyway.
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys: ${jsonencode(deploy_ssh_public_keys)}
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/10-hardening.conf
+    permissions: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+      PubkeyAuthentication yes
+      AllowUsers ${deploy_user}
+      MaxAuthTries 3
+
+  - path: /etc/fail2ban/jail.d/sshd.local
+    permissions: "0644"
+    content: |
+      [sshd]
+      enabled = true
+      maxretry = 5
+      bantime = 1h
+
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    permissions: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+
+  - path: /etc/docker/daemon.json
+    permissions: "0644"
+    content: |
+      {"log-driver": "json-file", "log-opts": {"max-size": "10m", "max-file": "3"}}
+
+  # Read once by `tailscale up`, then deleted by the bootstrap script.
+  - path: /run/tailscale-authkey
+    permissions: "0600"
+    content: ${jsonencode(tailscale_auth_key)}
+
+  - path: /usr/local/sbin/bootstrap-vps.sh
+    permissions: "0700"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+
+      # Docker and Tailscale from their official apt repositories.
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+      chmod a+r /etc/apt/keyrings/docker.asc
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $codename stable" \
+        > /etc/apt/sources.list.d/docker.list
+      curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/$codename.noarmor.gpg" \
+        -o /usr/share/keyrings/tailscale-archive-keyring.gpg
+      curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/$codename.tailscale-keyring.list" \
+        -o /etc/apt/sources.list.d/tailscale.list
+      apt-get update
+      apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin tailscale
+      systemctl enable --now docker
+      usermod -aG docker ${deploy_user}
+
+      # 2 GB swap so a build or a migration cannot get the app OOM-killed.
+      if ! swapon --show | grep -q /swapfile; then
+        fallocate -l 2G /swapfile
+        chmod 600 /swapfile
+        mkswap /swapfile
+        swapon /swapfile
+        echo '/swapfile none swap sw 0 0' >> /etc/fstab
+      fi
+
+      # Join the tailnet before the firewall is switched on.
+      systemctl enable --now tailscaled
+      tailscale up --auth-key=file:/run/tailscale-authkey --hostname=${tailscale_hostname}
+      rm -f /run/tailscale-authkey
+
+      # UFW: 80 and 443 from anywhere, SSH on the Tailscale interface only.
+      # Docker publishes ports around UFW, so the provider firewall is the real guard.
+      ufw default deny incoming
+      ufw default allow outgoing
+      ufw allow 80/tcp
+      ufw allow 443/tcp
+      ufw allow in on tailscale0 to any port 22 proto tcp
+      ufw --force enable
+
+      systemctl restart ssh
+      systemctl enable --now fail2ban unattended-upgrades
+
+      install -d -o ${deploy_user} -g ${deploy_user} -m 0755 /opt/app
+      echo "bootstrap finished"
+
+runcmd:
+  - [bash, /usr/local/sbin/bootstrap-vps.sh]
