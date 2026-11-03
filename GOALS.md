@@ -76,7 +76,7 @@ guards against forgotten resources.
 ## Objectives
 
 1. **Droplet in Terraform.** `digitalocean` provider: project, VPC, SSH key,
-   Cloud Firewall allowing only 80 and 443 from anywhere, one 2 GB Droplet
+   Cloud Firewall allowing only 22, 80 and 443 from anywhere, one 2 GB Droplet
    (Ubuntu 24.04, `sgp1`), reserved IP with its assignment, and a private Spaces
    bucket for backups with a 7-day lifecycle rule. All six contract outputs.
    Applied locally with the API token and Spaces keys as environment
@@ -162,12 +162,35 @@ DigitalOcean (Droplet, Cloud Firewall, reserved IP, Spaces) · Terraform
 Compose · Cloudflare DNS, WAF and rate limiting · GitHub Actions ·
 UFW · fail2ban · tflint · shellcheck · draw.io or Mermaid
 
+## Status (2026-11-04)
+
+Written but not yet run against DigitalOcean (no `terraform apply` so far, no
+state file):
+
+- Root Terraform, cloud-init template and `checks.yml` are in place; `fmt` and
+  `validate` pass.
+- `backend.hcl.example` is added for the Space state backend. The `backend "s3"`
+  block is deliberately not in `versions.tf` yet; state is local until the
+  first apply works, then `terraform init -backend-config=backend.hcl -migrate-state`.
+- The runbooks (bring-up checks, rehearsal, rollback test, Cloudflare settings,
+  downtime log, cost table) live in `README.md` for now, not `docs/`. Their
+  `TODO`s need real runs to fill in.
+- Not done yet: `tflint` and `shellcheck` on the latest changes, a commit of the
+  README, `versions.tf` and `backend.hcl.example` changes, the billing alert,
+  and everything in TicTacToeCICD.
+- Open questions: confirm that one Spaces subscription covers the state Space
+  (no extra cost); confirm the Compose service, database user and database name
+  in TicTacToeCICD for the cutover commands.
+
+Next: apply once, verify key login, hand the outputs to TicTacToeCICD, then
+move state to the Space.
+
 ## Definition of done
 
 - [ ] `terraform apply` creates the VPC, Cloud Firewall, Droplet, reserved IP and Spaces bucket within the budget, with all six contract outputs.
 - [ ] State lives in a Space; locking is either proven or documented as single-writer.
 - [ ] The VM is hardened by cloud-init: key-only public SSH with no root login, UFW, fail2ban, unattended-upgrades, Docker.
-- [ ] `checks.yml` runs fmt, validate, tflint and shellcheck on every PR.
+- [x] `checks.yml` runs fmt, validate, tflint and shellcheck on every PR.
 - [ ] Cloudflare proxies the domain with Full (strict) TLS, WAF and a login rate limit.
 - [ ] TicTacToeCICD deploys to the Droplet with smoke test and rollback, and backs up nightly to the bucket (tracked there; linked from here).
 - [ ] Rehearsal and real cutover done with downtime measured; DNS rollback tested.
