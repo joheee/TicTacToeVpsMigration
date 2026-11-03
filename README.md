@@ -267,6 +267,37 @@ pipeline in TicTacToeCICD.
 > firewall rule to a fixed IP and deploy from there, or reintroduce a private
 > network such as Tailscale.
 
+## Bring-up and verification runbook
+
+Run after every `terraform apply`. Do not rely on the server until each step passes.
+
+1. `terraform output` shows all six contract outputs
+   (`droplet_ipv4`, `tailscale_hostname`, `deploy_user`, `app_url`,
+   `backup_bucket`, `spaces_endpoint`).
+2. Wait for cloud-init to finish, then check it succeeded:
+
+   ```bash
+   ssh deploy@"$(terraform output -raw ssh_host)" 'cloud-init status --wait && cloud-init status --long'
+   ```
+
+3. **Confirm key login works before closing any other session**, and that the
+   hardening holds:
+
+   ```bash
+   ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no deploy@"$IP"  # must be refused
+   ssh root@"$IP"                                                                   # must be refused
+   ```
+
+4. On the server: `sudo ufw status` (22, 80, 443 only), `sudo fail2ban-client status sshd`,
+   `systemctl is-enabled unattended-upgrades`, `docker --version && docker compose version`,
+   `swapon --show`, `ls -ld /opt/app` (owned by `deploy`).
+5. From outside: `nmap -Pn -p 22,80,443,5432 "$IP"` shows only 22, 80 and 443 reachable.
+6. Copy the outputs into TicTacToeCICD's GitHub Actions variables
+   (`DO_DROPLET_IP`, `DO_TAILSCALE_HOST`, `DO_DEPLOY_USER`, `DO_APP_URL`,
+   `DO_BACKUP_BUCKET`, `DO_SPACES_ENDPOINT`).
+7. Test runs end with `terraform destroy`, never a power-off. Confirm in the
+   control panel that no Droplet, reserved IP or Space is left over.
+
 ## Cloudflare settings
 
 Set by hand in the Cloudflare dashboard (the Cloudflare provider is a stretch
@@ -278,7 +309,10 @@ goal). `TODO`: record the exact values here once applied.
 | Record | `A` record for `tictactoe` (and `vps.tictactoe` for the rehearsal) pointing at the reserved IP, **proxied** |
 | SSL/TLS mode | **Full (strict)** |
 | WAF | Managed rules on |
-| Rate limiting | Rule on the login and register endpoints (`TODO`: paths and thresholds) |
+| Rate limiting | Rule on the login and register endpoints. Proposed start: 10 requests per minute per IP, action block for 10 minutes. `TODO`: confirm the real paths against the app (for example `/api/auth/login` and `/api/auth/register`) and tune the threshold |
+| Always Use HTTPS | On |
+| Origin certificate | Cloudflare Origin CA cert, or let Caddy get a public cert (Full strict needs a valid one either way) |
+| Firewall at the origin | Optional hardening: allow 80/443 only from Cloudflare ranges once the site is proxied (UFW and the Cloud Firewall) |
 | TTL before cutover | Lowered ahead of the flip (see the runbook) |
 
 TicTacToeCICD's Caddy must trust Cloudflare's IP ranges (`trusted_proxies`) so
@@ -332,6 +366,16 @@ sequenceDiagram
 Run the full procedure below against the `vps.` hostname, with the real dump,
 and **time every step**. Record the result in the [downtime log](#downtime-log).
 Fix whatever is slow or confusing, then rehearse again if needed.
+
+1. Set `app_hostname = "vps.tictactoe.johe.my.id"` and apply (or confirm it).
+2. Add the proxied `vps.tictactoe` record pointing at the reserved IP.
+3. Deploy the current app version with TicTacToeCICD's `deploy-do.yml`.
+4. Take a real dump from EC2 and run steps 2 to 7 of [The cutover](#the-cutover),
+   with `vps.tictactoe.johe.my.id` as the target instead of the real record.
+5. Time each step with a stopwatch or `date +%T` stamps and paste them into the log.
+6. Run the [rollback test](#rollback-runbook) on the `vps.` record.
+7. Wipe the rehearsal data on the Droplet (restore is `--clean`, so the real run
+   starts from a clean database) and fix anything that was slow or unclear.
 
 ### The cutover
 
@@ -399,8 +443,14 @@ running, untouched, for 48 hours after the cutover.
 5. Record what failed in the [downtime log](#downtime-log), fix it, and
    reschedule.
 
-The rollback is **tested** during the rehearsal, not just written down: flip DNS
-to EC2 and back on the `vps.` hostname and time it. `TODO`: record the result.
+The rollback is **tested** during the rehearsal, not just written down:
+
+1. With the `vps.tictactoe` record on the Droplet, note the time and point it at the EC2 Elastic IP.
+2. Poll until it answers from EC2: `while ! curl -fsS https://vps.tictactoe.johe.my.id/ | grep -q EXPECTED; do sleep 2; done`
+   (pick a marker that only EC2 returns, such as a response header).
+3. Note the time, point it back at the Droplet, repeat the poll, and log both durations.
+
+`TODO`: record the result in the downtime log.
 
 ## Downtime log
 
@@ -433,19 +483,47 @@ volumes or load balancers, and every test run ends in `terraform destroy`.
 ## Remote state
 
 State is **local while testing**. After that it moves to a hand-made Space
-through the S3 backend:
+through the S3 backend. The settings live in `backend.hcl` (git-ignored; commit
+only `backend.hcl.example`):
 
-- `endpoints.s3` pointing at the Space's regional endpoint
-- `use_path_style`
-- the `skip_*` validation flags (DigitalOcean is not AWS)
+| Setting | Value | Why |
+|---|---|---|
+| `bucket` | `tictactoe-prod-tfstate` | Hand-made private Space, so Terraform does not depend on its own state bucket |
+| `key` | `vps-migration/terraform.tfstate` | |
+| `region` | `us-east-1` | Dummy value the S3 backend insists on |
+| `endpoints.s3` | `https://sgp1.digitaloceanspaces.com` | The Space's real region |
+| `use_path_style` | `true` | Spaces buckets are not addressed like AWS |
+| `skip_*` flags | credentials validation, account ID, metadata API, region validation, S3 checksum | DigitalOcean is not AWS |
+| `use_lockfile` | `true` | Native S3 locking; to be tested, see below |
 
-The switch is `terraform init -migrate-state`. Credentials stay in
-`SPACES_ACCESS_KEY_ID` and `SPACES_SECRET_ACCESS_KEY`, and the Space is created
-by hand so Terraform does not depend on its own state bucket.
+**Cost flag:** I believe one Spaces subscription ($5, 250 GB) covers every
+Space in the account, so the state Space should not add cost, but confirm this
+in the control panel before creating it.
 
-`TODO`: test whether `use_lockfile = true` works on Spaces with two concurrent
-`plan` runs. If it does not, state here is **single-writer**, and this section
-will say so.
+Steps:
+
+1. In the control panel, create a private Space `tictactoe-prod-tfstate` in
+   `sgp1`, and a Spaces key pair.
+2. `cp backend.hcl.example backend.hcl` and adjust the bucket name if taken.
+3. Add `backend "s3" {}` to the `terraform {}` block in `versions.tf`.
+4. Map the keys, because the S3 backend reads the `AWS_*` variables:
+
+   ```bash
+   export AWS_ACCESS_KEY_ID="$SPACES_ACCESS_KEY_ID"
+   export AWS_SECRET_ACCESS_KEY="$SPACES_SECRET_ACCESS_KEY"
+   ```
+
+5. `terraform init -backend-config=backend.hcl -migrate-state`, answer `yes`,
+   then confirm `terraform plan` shows no changes and delete the local
+   `terraform.tfstate` once the Space holds the state.
+
+CI keeps using `terraform init -backend=false`, so it never needs the keys.
+
+**Locking test.** Run `terraform plan` in two terminals at the same time. If the
+second one fails with a "state lock" error mentioning `terraform.tfstate.tflock`,
+`use_lockfile` works on Spaces. If both succeed, locking does not work and state
+here is **single-writer**: only one person or process runs Terraform at a time.
+`TODO`: record the result here.
 
 ## Checks and CI
 

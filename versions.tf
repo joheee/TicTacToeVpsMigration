@@ -8,8 +8,10 @@ terraform {
     }
   }
 
-  # No backend block yet: state is local while testing. Moving it to a Space
-  # means adding an S3 backend and running `terraform init -migrate-state`.
+  # No backend block yet: state is local while testing. To move it to a Space,
+  # add `backend "s3" {}` here (settings live in backend.hcl, see
+  # backend.hcl.example) and run
+  # `terraform init -backend-config=backend.hcl -migrate-state`.
 }
 
 # Credentials come from the environment, never from variables or files:
